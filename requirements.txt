@@ -1,0 +1,6 @@
+# 上岸打卡系统 · 采集脚本依赖
+# 与 collector.py 文件头部注释声明的依赖一致
+requests
+beautifulsoup4
+lxml
+playwright
