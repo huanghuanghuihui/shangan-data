@@ -1,0 +1,97 @@
+name: 定时采集数据
+
+on:
+  schedule:
+    - cron: '0 2 * * *'      # 北京时间 10:00
+    - cron: '0 11 * * *'     # 北京时间 19:00
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect-data
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      COLLECTOR_SCRIPT: collector.py
+      DATA_PREFIX: workbench_data
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 安装 Playwright 浏览器
+        run: python -m playwright install --with-deps chromium
+
+      - name: 运行采集脚本
+        run: python "$COLLECTOR_SCRIPT"
+
+      - name: 确认数据文件已生成
+        run: |
+          echo "===== 检查数据文件 ====="
+          missing=0
+          for f in "${DATA_PREFIX}.json" "${DATA_PREFIX}.js"; do
+            if [ -f "$f" ]; then
+              echo "✅ 已生成：$f（$(wc -c < "$f") 字节）"
+            else
+              echo "❌ 缺失：$f"
+              missing=1
+            fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo "::error::数据文件未生成，采集可能失败，请查看上面的采集日志"
+            exit 1
+          fi
+
+      - name: 提交采集结果
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${DATA_PREFIX}.json" "${DATA_PREFIX}.js"
+          if git diff --staged --quiet; then
+            echo "本次采集无数据变化，跳过提交"
+          else
+            git commit -m "自动采集数据 $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+            echo "已提交并推送最新数据"
+          fi
+
+      - name: 输出采集摘要
+        if: always()
+        run: |
+          echo "===== 采集结果摘要 ====="
+          if [ -f "${DATA_PREFIX}.json" ]; then
+            python - <<'PY'
+          import json, os
+          try:
+              with open(os.environ.get("DATA_PREFIX", "workbench_data") + ".json", encoding="utf-8") as f:
+                  d = json.load(f)
+              print("更新时间：", d.get("updated_at", "未知"))
+              print("文章总数：", len(d.get("articles", [])))
+              for s in d.get("sources_status", []):
+                  print("  - {}: {} ({} 篇) {}".format(
+                      s.get("source", ""), s.get("status", ""),
+                      s.get("count", 0), s.get("error", "") or s.get("note", "")))
+          except Exception as e:
+              print("读取摘要失败：", e)
+          PY
+          else
+            echo "未生成 ${DATA_PREFIX}.json"
+          fi
